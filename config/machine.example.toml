@@ -21,8 +21,7 @@ databases = [
     # "nextcloud",
 ]
 
-# Uptime Kuma push URLs
+# Uptime Kuma push URLs (backup: hourly run; verify: nightly check + manual --deep)
 [kuma]
 backup = "https://kuma.example.com/api/push/xxxxx"
 verify = "https://kuma.example.com/api/push/yyyyy"
-deep_verify = "https://kuma.example.com/api/push/zzzzz"
