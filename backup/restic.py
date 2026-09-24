@@ -3,6 +3,7 @@
 import os
 import subprocess
 import tempfile
+from datetime import date
 from pathlib import Path
 
 from .config import Config, ResticConfig
@@ -19,6 +20,16 @@ class ResticError(Exception):
 # (slow + heavier on the storage box). /var/lib/backup is in every unit's
 # ReadWritePaths, so this is writable under ProtectSystem=strict.
 RESTIC_CACHE_DIR = "/var/lib/backup/restic-cache"
+
+# How long a restic command waits for a conflicting lock before giving up.
+# `restic check` holds an EXCLUSIVE lock for its whole run (~1 h for the nightly
+# 1/7 subset on a ~1 TiB repo), so an hourly backup colliding with it must be
+# able to outwait it -- a backup that waits is delayed, one that times out fails.
+RETRY_LOCK = "90m"
+
+# The nightly verify reads 1/READ_DATA_GROUPS of the pack files, one group per
+# ISO weekday, so all data is read once every 7 days (see daily_read_data_subset).
+READ_DATA_GROUPS = 7
 
 
 def _get_repo_url(config: Config) -> str:
@@ -61,7 +72,7 @@ def _run_restic(
     # Build command with retry-lock to wait if repo is locked
     cmd = ["restic"]
     if retry_lock:
-        cmd.extend(["--retry-lock", "30m"])  # Wait up to 30 minutes for lock
+        cmd.extend(["--retry-lock", RETRY_LOCK])
     cmd.extend(args)
 
     result = subprocess.run(
@@ -175,17 +186,41 @@ def run_forget_and_prune(config: Config, password: str) -> None:
     _run_restic(config, args, password)
 
 
-def run_check(config: Config, password: str, read_data: bool = False) -> None:
+def daily_read_data_subset(day: date | None = None) -> str:
+    """Return today's `--read-data-subset` value, e.g. "3/7" on a Wednesday.
+
+    The group is the ISO weekday (Mon=1 .. Sun=7), so seven consecutive nightly
+    runs read every pack file once. restic assigns packs to groups by pack ID,
+    so the split is stable across runs (new packs land in some group and get
+    read within a week).
+    """
+    day = day or date.today()
+    return f"{day.isoweekday()}/{READ_DATA_GROUPS}"
+
+
+def run_check(
+    config: Config,
+    password: str,
+    read_data: bool = False,
+    read_data_subset: str | None = None,
+) -> None:
     """Run restic check (verification).
+
+    The structural check (index, snapshots, trees) is part of every run; the
+    flags below add reading pack data on top.
 
     Args:
         config: Backup configuration
         password: Repository password
-        read_data: If True, also verify data integrity (slow, reads all data)
+        read_data: If True, read and verify ALL data (slow: hours on a large repo)
+        read_data_subset: Read and verify only this subset ("n/t"), e.g. the
+            nightly group from daily_read_data_subset(). Ignored if read_data.
     """
     args = ["check"]
     if read_data:
         args.append("--read-data")
+    elif read_data_subset:
+        args.append(f"--read-data-subset={read_data_subset}")
 
     _run_restic(config, args, password)
 
