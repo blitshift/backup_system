@@ -10,7 +10,7 @@ A backup system for Linux machines with Restic, MariaDB dumps, and cold storage 
 - **Cold storage** - copy files with SHA256 checksum verification
 - **Uptime Kuma integration** - push notifications for monitoring
 - **Secure password storage** - uses `keyrings.cryptfile`
-- **systemd timers** - hourly backups, daily/weekly verification
+- **systemd timers** - hourly backups, nightly verification (1/7 of the data per night)
 
 ## Quick Start
 
@@ -83,8 +83,7 @@ backup script never runs and never pushes any status to Kuma — so the failure 
    the Kuma UI so that **missing** pings alert on their own (covers a hung run,
    a disabled timer, or a powered-off machine):
    - `backup` → ~5400 s (90 min; runs hourly)
-   - `verify` → ~93600 s (26 h; runs daily)
-   - `deep_verify` → ~691200 s (8 days; runs weekly)
+   - `verify` → ~108000 s (30 h; runs nightly, up to ~2.5 h incl. lock wait)
 
 ### 4. Mark folders for backup
 
@@ -129,8 +128,8 @@ sudo backup run
 sudo backup run --dry-run
 
 # Verify backup integrity
-sudo backup verify          # Light check (fast, daily)
-sudo backup verify --deep   # Deep check (reads all data, weekly)
+sudo backup verify          # Structure + today's 1/7 of the data (nightly timer)
+sudo backup verify --deep   # Structure + ALL data (manual only, takes hours)
 
 # Cold storage
 sudo backup cold                    # Backup cold storage paths
@@ -141,13 +140,22 @@ sudo backup verify-cold             # Verify checksums
 
 ## Scheduled Backups
 
-The setup script installs three systemd timers:
+The setup script installs two systemd timers:
 
 | Timer | Schedule | What it does |
 |-------|----------|--------------|
 | `backup.timer` | **Hourly** | Runs `backup run` |
-| `backup-verify.timer` | **Daily** | Runs `backup verify` (light check) |
-| `backup-verify-deep.timer` | **Weekly** | Runs `backup verify --deep` |
+| `backup-verify.timer` | **Nightly** | Runs `backup verify` |
+
+The nightly `backup verify` runs `restic check --read-data-subset=N/7`, where
+N is the ISO weekday (Mon=1 … Sun=7): the structural check plus reading 1/7 of
+the pack files, so every pack is read once a week. This replaces the former
+weekly `--deep` timer, whose ~6 h full read blocked the hourly backups.
+
+`restic check` holds an **exclusive** repo lock while it runs. Every restic call
+waits up to 90 min for a lock (`--retry-lock`), so a backup that collides with
+the nightly check (~1 h) is delayed, not failed. A manual `verify --deep` holds
+the lock for hours; backups in that window fail after the 90 min wait.
 
 Check timer status:
 ```bash
@@ -157,13 +165,12 @@ journalctl -u backup.service -f  # Watch backup logs
 
 ## Uptime Kuma Integration
 
-Create three push monitors in Uptime Kuma with different heartbeat expectations:
+Create two push monitors in Uptime Kuma with different heartbeat expectations:
 
 | Monitor | Expected Heartbeat |
 |---------|-------------------|
 | `backup-{machine}` | Every 1-2 hours |
-| `verify-{machine}` | Every 1-2 days |
-| `deep-verify-{machine}` | Every 1-2 weeks |
+| `verify-{machine}` | Every 1-2 days (nightly check; a manual `--deep` run pushes here too) |
 
 If any check fails, it pushes a DOWN status. If a timer doesn't fire, Kuma will alert on missing heartbeat.
 
@@ -215,8 +222,10 @@ databases = ["wordpress", "nextcloud"]
 [kuma]
 backup = "https://kuma.example.com/api/push/xxxxx"
 verify = "https://kuma.example.com/api/push/yyyyy"
-deep_verify = "https://kuma.example.com/api/push/zzzzz"
 ```
+
+A leftover `deep_verify` key from older installs is ignored (with a note on
+stderr); remove it and delete its Kuma monitor.
 
 ## Restoring
 
