@@ -1,5 +1,5 @@
 [Unit]
-Description=Verify backup integrity (light check)
+Description=Verify backup integrity (structural check + 1/7 of the data)
 After=network-online.target
 Wants=network-online.target
 OnFailure=backup-onfailure@%n.service
@@ -11,7 +11,9 @@ Nice=15
 IOSchedulingClass=idle
 
 # Bound a hung run so it can't hold a repo lock indefinitely (see backup.service).
-TimeoutStartSec=1h
+# Budget: up to 90 min waiting for a running backup's lock (--retry-lock) plus
+# ~1 h reading the nightly 1/7 subset of a ~1 TiB repo, with margin for growth.
+TimeoutStartSec=4h
 
 # Security hardening
 PrivateTmp=true
