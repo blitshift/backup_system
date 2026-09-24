@@ -31,7 +31,6 @@ MACHINE_CONFIG = Path("/etc/backup/machine.toml")
 UNIT_TO_KEY = {
     "backup.service": "backup",
     "backup-verify.service": "verify",
-    "backup-verify-deep.service": "deep_verify",
 }
 
 
