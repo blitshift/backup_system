@@ -46,7 +46,6 @@ class ColdStorageConfig:
 class KumaEndpoints:
     backup: str | None = None
     verify: str | None = None
-    deep_verify: str | None = None
 
 
 @dataclass
@@ -111,8 +110,13 @@ def load_config(
     kuma = KumaEndpoints(
         backup=kuma_data.get("backup"),
         verify=kuma_data.get("verify"),
-        deep_verify=kuma_data.get("deep_verify"),
     )
+    # The weekly deep verify (and its own Kuma monitor) was retired: the nightly
+    # verify now reads a 1/7 subset and pushes to `verify`. Deployed configs may
+    # still carry the old key -- ignore it, just point it out.
+    if "deep_verify" in kuma_data:
+        print(f"Note: [kuma] deep_verify in {machine_path} is no longer used "
+              f"(deep verify retired); remove it.", file=sys.stderr)
 
     machine_config = MachineConfig(
         name=machine["name"],
