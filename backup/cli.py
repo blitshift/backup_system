@@ -224,7 +224,7 @@ def verify(ctx, deep: bool):
 
         run_check(config, password, read_data=deep, read_data_subset=subset)
         click.echo("Verification passed!")
-        push_verify_success(config.machine.kuma.verify, f"Verification passed ({mode})")
+        push_verify_success(config.machine.kuma.verify, f"Verification passed: {mode}")
 
     except ResticError as e:
         click.echo(f"Verification failed: {e}", err=True)
