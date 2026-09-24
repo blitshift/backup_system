@@ -27,6 +27,9 @@ MINIFORGE_URL = (
 OLD_VENV_PATH = "/opt/backup-venv"  # legacy install to clean up
 NOTIFY_SCRIPT = "/opt/backup-notify-failure.py"  # stdlib-only OnFailure handler
 BIN_SYMLINK = "/usr/local/bin/backup"
+# Units from earlier versions that a re-install removes: the weekly deep verify
+# was replaced by the nightly `backup verify` (reads 1/7 of the data per night).
+RETIRED_UNITS = ["backup-verify-deep.timer", "backup-verify-deep.service"]
 
 CONFIG_DIR = "/etc/backup"
 STATE_DIR = "/var/lib/backup"
@@ -198,7 +201,7 @@ def install_notifier():
 def create_config(machine_name: str, backup_paths: list[str], scan_paths: list[str],
                   storage_host: str, storage_user: str, storage_path: str,
                   databases: list[str], kuma_backup: str, kuma_verify: str,
-                  kuma_deep_verify: str, base_path_strip: str):
+                  base_path_strip: str):
     """Create config files."""
     print(f"\n=== Creating config in {CONFIG_DIR} ===")
 
@@ -269,7 +272,6 @@ databases = [
 [kuma]
 backup = "{kuma_backup}"
 verify = "{kuma_verify}"
-deep_verify = "{kuma_deep_verify}"
 '''
 
     # Write configs via sudo
@@ -300,7 +302,7 @@ deep_verify = "{kuma_deep_verify}"
 def update_systemd_units():
     """Point the backup service units at the conda env's `backup` binary.
 
-    Only touches the three real backup services -- NOT backup-onfailure@.service,
+    Only touches the two real backup services -- NOT backup-onfailure@.service,
     which intentionally runs the system python against the standalone notifier.
     """
     print(f"\n=== Updating systemd units ===")
@@ -309,7 +311,6 @@ def update_systemd_units():
     exec_lines = {
         "backup.service": f"ExecStart={BACKUP_BIN} run",
         "backup-verify.service": f"ExecStart={BACKUP_BIN} verify",
-        "backup-verify-deep.service": f"ExecStart={BACKUP_BIN} verify --deep",
     }
 
     for name, exec_line in exec_lines.items():
@@ -329,9 +330,20 @@ def install_systemd():
 
     systemd_dir = SCRIPT_DIR / "systemd"
 
+    # Remove retired units left by an earlier install. Idempotent; stop and
+    # disable are separate calls with errors ignored because disable fails on
+    # the dangling symlinks left once the unit files are gone from the repo
+    # (same logic as systemd/install.sh).
+    for unit in RETIRED_UNITS:
+        dst = Path(f"/etc/systemd/system/{unit}")
+        if dst.is_symlink() or dst.exists():
+            print(f"  Removing retired {unit}")
+        run_sudo(["systemctl", "stop", unit], check=False, capture_output=True)
+        run_sudo(["systemctl", "disable", unit], check=False, capture_output=True)
+        run_sudo(["rm", "-f", str(dst), f"/etc/systemd/system/timers.target.wants/{unit}"])
+
     for unit in ["backup.service", "backup.timer",
                  "backup-verify.service", "backup-verify.timer",
-                 "backup-verify-deep.service", "backup-verify-deep.timer",
                  "backup-onfailure@.service"]:
         src = systemd_dir / unit
         dst = f"/etc/systemd/system/{unit}"
@@ -339,8 +351,9 @@ def install_systemd():
         print(f"  Linked {unit}")
 
     run_sudo(["systemctl", "daemon-reload"])
+    run_sudo(["systemctl", "reset-failed", *RETIRED_UNITS], check=False, capture_output=True)
 
-    for timer in ["backup.timer", "backup-verify.timer", "backup-verify-deep.timer"]:
+    for timer in ["backup.timer", "backup-verify.timer"]:
         result = subprocess.run(
             ["sudo", "systemctl", "enable", "--now", timer],
             capture_output=True,
@@ -423,7 +436,6 @@ def main():
     print("\nUptime Kuma push URLs (leave empty to skip monitoring):")
     kuma_backup = prompt("  Backup success URL", "")
     kuma_verify = prompt("  Verify success URL", "")
-    kuma_deep_verify = prompt("  Deep verify success URL", "")
 
     # Summary
     print("\n" + "=" * 60)
@@ -434,7 +446,7 @@ def main():
     print(f"Scan paths: {scan_paths}")
     print(f"Extra backup paths: {backup_paths}")
     print(f"Databases: {databases}")
-    print(f"Kuma URLs configured: {bool(kuma_backup or kuma_verify or kuma_deep_verify)}")
+    print(f"Kuma URLs configured: {bool(kuma_backup or kuma_verify)}")
     print()
 
     if not prompt_yn("Proceed with installation?"):
@@ -454,7 +466,6 @@ def main():
         databases=databases,
         kuma_backup=kuma_backup,
         kuma_verify=kuma_verify,
-        kuma_deep_verify=kuma_deep_verify,
         base_path_strip=base_path_strip,
     )
     install_systemd()
@@ -466,8 +477,7 @@ def main():
     print()
     print("Timers installed and running:")
     print("  - backup.timer        (hourly)")
-    print("  - backup-verify.timer (daily)")
-    print("  - backup-verify-deep.timer (weekly)")
+    print("  - backup-verify.timer (nightly; reads 1/7 of the data, all of it every 7 days)")
     print()
     print("Next steps:")
     print("  1. Drop .backup files in folders you want backed up")
@@ -478,8 +488,7 @@ def main():
     print("IMPORTANT - finish the dead-man's-switch in the Uptime Kuma UI:")
     print("  Set each push monitor's Heartbeat Interval so MISSING pings alert:")
     print("    backup       -> ~5400s (90 min; runs hourly)")
-    print("    verify       -> ~93600s (26 h; runs daily)")
-    print("    deep_verify  -> ~691200s (8 days; runs weekly)")
+    print("    verify       -> ~108000s (30 h; runs nightly, up to ~2.5 h incl. lock wait)")
     print("  Without this, a silent failure (like the Jun 2026 outage) goes unnoticed.")
     print()
 
