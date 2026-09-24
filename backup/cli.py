@@ -11,7 +11,7 @@ from . import __version__
 from .config import load_config, COMMON_CONFIG, MACHINE_CONFIG, CONFIG_DIR
 from .scanner import scan_markers, print_scan_result, get_effective_backup_paths
 from .secrets import get_restic_password, set_restic_password, get_mariadb_password, set_mariadb_password
-from .restic import run_backup, run_forget_and_prune, run_check, init_repo, check_repo_exists, backup_database_dump, get_repo_info, unlock_stale, ResticError
+from .restic import run_backup, run_forget_and_prune, run_check, daily_read_data_subset, init_repo, check_repo_exists, backup_database_dump, get_repo_info, unlock_stale, ResticError
 from .mariadb import dump_all_databases, MariaDBError
 from .kuma import push_backup_success, push_backup_failure, push_verify_success, push_verify_failure
 from .cold import upload_to_cold_storage, get_cold_storage_status, verify_cold_storage, ColdStorageError
@@ -201,34 +201,34 @@ def run(ctx, dry_run: bool, no_prune: bool):
 
 
 @cli.command()
-@click.option("--deep", is_flag=True, help="Run deep verification (reads all data)")
+@click.option("--deep", is_flag=True,
+              help="Read ALL data instead of today's 1/7 subset (manual; takes hours "
+                   "on a large repo and holds an exclusive lock that blocks backups)")
 @click.pass_context
 def verify(ctx, deep: bool):
-    """Verify backup integrity."""
+    """Verify backup integrity.
+
+    Default (nightly timer): structural check plus reading today's 1/7 of the
+    data (group = ISO weekday), so all data is read once every 7 days.
+    """
     config = _require_config(ctx)
     password = _get_password(config.machine.name)
 
-    mode = "deep" if deep else "light"
+    subset = None if deep else daily_read_data_subset()
+    mode = "deep (all data)" if deep else f"read-data subset {subset}"
     click.echo(f"Running {mode} verification for {config.machine.name}...")
 
     try:
         # Clear stale locks left by a previously interrupted run before checking.
         unlock_stale(config, password)
 
-        run_check(config, password, read_data=deep)
+        run_check(config, password, read_data=deep, read_data_subset=subset)
         click.echo("Verification passed!")
-
-        if deep:
-            push_verify_success(config.machine.kuma.deep_verify)
-        else:
-            push_verify_success(config.machine.kuma.verify)
+        push_verify_success(config.machine.kuma.verify, f"Verification passed ({mode})")
 
     except ResticError as e:
         click.echo(f"Verification failed: {e}", err=True)
-        if deep:
-            push_verify_failure(config.machine.kuma.deep_verify, str(e))
-        else:
-            push_verify_failure(config.machine.kuma.verify, str(e))
+        push_verify_failure(config.machine.kuma.verify, f"{mode}: {e}")
         sys.exit(1)
 
 
