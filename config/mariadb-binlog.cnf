@@ -1,0 +1,20 @@
+# MariaDB binary log for incremental database backups (hourly binlogs on top
+# of a daily full dump). Install as root — copy, don't symlink (mariadbd runs
+# as mysql and can't read files under /home):
+#
+#   sudo install -m 644 config/mariadb-binlog.cnf /etc/my.cnf.d/binlog.cnf
+#   sudo systemctl restart mariadb
+#
+# A separate drop-in (not an edit of server.cnf) so package updates never
+# touch it.
+
+[mysqld]
+server_id                  = 1
+log_bin                    = mariadb-bin
+binlog_format              = ROW
+# Deletes/updates log only the primary key + changed columns, so e.g. a daily
+# purge of old rows stays small. Sufficient for point-in-time replay as long as
+# tables have primary keys.
+binlog_row_image           = MINIMAL
+max_binlog_size            = 256M
+binlog_expire_logs_seconds = 259200   # 3 days
